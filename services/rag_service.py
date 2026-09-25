@@ -8,6 +8,7 @@ from openai import AsyncOpenAI
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 import resend
+import logging
 
 # ========================================
 # 1. LOAD ENV VARIABLES
@@ -258,20 +259,32 @@ def handle_lead_capture(message: str) -> str:
 # 12. MAIN CHATBOT PIPELINE (ASYNC)
 # ========================================
 
+
+
+logger = logging.getLogger(__name__)
+
 async def chatbot(message: str) -> str:
     message = message.strip()
 
     if not message:
         return "Please enter a message."
 
-    if lead_state["active"]:
-        return handle_lead_capture(message)
+    try:
+        if lead_state["active"]:
+            return handle_lead_capture(message)
 
-    if await detect_lead_intent(message):
-        lead_state["active"] = True
+        if await detect_lead_intent(message):
+            lead_state["active"] = True
+            return (
+                "I'd be happy to help you get started. "
+                "Could you please provide your full name?"
+            )
+
+        return await rag_chat(message)
+
+    except Exception as e:
+        logger.error(f"Chatbot pipeline failed: {e}")
         return (
-            "I'd be happy to help you get started. "
-            "Could you please provide your full name?"
+            "Sorry, I'm having trouble processing your request right now. "
+            "Please try again in a moment."
         )
-
-    return await rag_chat(message)
