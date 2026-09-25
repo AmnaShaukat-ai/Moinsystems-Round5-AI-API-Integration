@@ -5,8 +5,8 @@ from services.rag_service import chatbot
 router = APIRouter()
 
 @router.post("/chat", response_model=ChatResponse)
-def chat_endpoint(request: ChatRequest):
-    answer = chatbot(request.query)
+async def chat_endpoint(request: ChatRequest):
+    answer = await chatbot(request.query)
 
     return ChatResponse(
         answer=answer,
