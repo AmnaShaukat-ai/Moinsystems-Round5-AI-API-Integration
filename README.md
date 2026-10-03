@@ -1,255 +1,107 @@
-# MoinSystems FastAPI RAG Backend
+# MoinSystems AI — Round 5: AI & API Integration
 
-A structured FastAPI backend for a Retrieval-Augmented Generation (RAG) chatbot, developed as part of the MoinSystems AI internship.
+## Overview
 
-The project exposes the RAG system through REST API endpoints so that a website or other client application can communicate with the AI backend.
+This update extends the MoinSystems AI chatbot (built in Rounds 1–4) by connecting it to external services. The AI chatbot now does more than hold a conversation — when it detects buying intent, it collects a lead's details, saves them to a database, and automatically triggers a real-world notification workflow through n8n.
 
-## Architecture
+**Core flow:**
 
-```text
-Client / Website
-       |
-       | HTTP Request
-       ↓
-    FastAPI
-       |
-       ├── /health
-       ├── /chat
-       └── /retrieve
-       |
-       ↓
-   RAG Service
-       |
-       ├── Knowledge Retrieval
-       ├── Context Preparation
-       └── LLM Answer Generation
-       |
-       ↓
- Knowledge Base + Vector Search + LLM
-       |
-       ↓
-    API Response
+```
+User chats with the bot
+        ↓
+AI detects buying/lead intent (detect_lead_intent)
+        ↓
+Bot collects name, email, phone (with smart extraction from natural language)
+        ↓
+Lead is validated
+        ↓
+Lead is saved to a SQLite database
+        ↓
+Lead data is POSTed to an n8n webhook (event-driven trigger)
+        ↓
+n8n workflow calls the Resend API
+        ↓
+A real email notification is sent with the lead's details
 ```
 
-## Project Objective
+## What Was Added in Round 5
 
-The objective of this round was to convert the RAG prototype into a structured backend API that can be consumed by a website or other applications.
+### 1. Smart Field Extraction
+Previously, the bot stored whatever the user typed verbatim (e.g. "My name is Amna Shaukat" would be saved as the full sentence). Three new regex-based helper functions were added to `rag_service.py`:
 
-The backend separates:
+- `extract_name(text)` — strips common lead-in phrases ("my name is", "i am", "this is", etc.) to isolate the actual name.
+- `extract_email(text)` — already existed; pulls a valid email address out of any sentence.
+- `extract_phone(text)` — pulls a phone number (digits, spaces, dashes) out of any sentence.
 
-* API/HTTP handling
-* Request and response validation
-* RAG processing
-* Knowledge retrieval
-* Answer generation
+### 2. Database Integration (SQLite)
+`send_lead_email()` now opens a connection to a local SQLite database (`lead.db`), creates the `lead` table if it doesn't exist, and inserts every validated lead as a new row (`id`, `name`, `email`, `phone`).
 
-This separation makes the application easier to test, maintain, and extend.
+### 3. Webhook / n8n Integration
+After saving to the database, the same function sends a `POST` request (with the lead data as JSON) to an n8n webhook URL (`N8N_WEBHOOK_URL`, stored in `.env`). This is an event-driven trigger — it only fires once a complete, validated lead exists.
 
-## Main Features
+### 4. n8n Workflow (built separately, hosted via Docker)
+A new n8n workflow, **"Lead Capture - MoinSystems AI"**, was built with:
+- **Webhook node** (trigger, `POST`, Production URL, Active)
+- **HTTP Request node** — calls the Resend API (`https://api.resend.com/emails`) using Header Auth (`Authorization: Bearer <RESEND_API_KEY>`) to send a formatted email containing the lead's name, email, and phone.
 
-* FastAPI REST API
-* Health check endpoint
-* Chat endpoint for RAG-based responses
-* Knowledge retrieval endpoint
-* Pydantic request/response validation
-* Structured API routes
-* Separation between API and RAG logic
-* Swagger/OpenAPI documentation
-* Error handling and API status codes
-* Modular project structure
+### 5. Error Handling
+The database write and the webhook call are each wrapped in their own `try/except` block. If either step fails, the function returns a clear success/failure message instead of crashing, and the error is logged via the existing `logger`.
 
-## Project Structure
+## Environment Variables
 
-```text
-MoinSystems_FastAPI/
-│
-├── main.py
-│
-├── routes/
-│   ├── chat.py
-│   ├── health.py
-│   └── retrieval.py
-│
-├── models/
-│   └── chat_models.py
-│
-├── services/
-│   └── rag_service.py
-│
-├── data/
-│   └── README.md
-│
-├── requirements.txt
-│
-└── README.md
+Add the following to the project's `.env` file (in addition to the existing `OPENAI_API_KEY`, `QDRANT_URL`, `QDRANT_API_KEY`, `RESEND_API_KEY`):
+
+```
+N8N_WEBHOOK_URL=http://localhost:5679/webhook/lead-capture
 ```
 
-> The exact structure may vary depending on the final implementation.
+> Use the **Production URL** from n8n (not the Test URL) so the webhook works automatically without needing to manually "Listen for Test Event" each time.
 
-## API Endpoints
+## New Python Dependencies
 
-### Health Check
-
-```http
-GET /health
+```python
+import sqlite3
+import requests
 ```
 
-Used to verify that the API is running.
+(No install needed for `sqlite3` — it's part of Python's standard library. `requests` may need `pip install requests` if not already present.)
 
-Example response:
+## How to Test
 
-```json
-{
-  "status": "healthy"
-}
-```
+1. Start the FastAPI server (`uvicorn main:app --reload`).
+2. Ensure the n8n Docker container is running and the workflow is **Active**.
+3. Send a message to the chatbot that signals buying intent, e.g.:
+   ```
+   I'm interested in your services, please contact me
+   ```
+4. Respond with name, email, and phone when prompted — natural phrasing works too, e.g. "My name is Amna Shaukat", "my email is amna@example.com", "my contact number is 03001234567".
+5. Verify:
+   - The chatbot returns a success confirmation message.
+   - A new row appears in `lead.db` (table `lead`).
+   - The n8n workflow execution shows as successful (check the **Executions** tab for Production runs).
+   - An email arrives via Resend with the lead's full details.
 
-### Chat
+## Deliverable Checklist (Round 5 Requirements)
 
-```http
-POST /chat
-```
+| Requirement | Status |
+|---|---|
+| REST API fundamentals and authentication patterns | ✅ |
+| GET/POST requests, JSON payloads and response parsing | ✅ |
+| Webhooks and event-driven workflows | ✅ |
+| Integrating databases and third-party services | ✅ |
+| Connecting AI decisions to automation platforms (n8n) | ✅ |
+| Error handling, timeouts and retries around external services | ✅ |
+| **Deliverable:** at least one useful integration | ✅ — Database write **+** n8n-triggered workflow **+** notification (4-in-1) |
 
-Accepts a user question and passes it through the RAG pipeline.
+## Tech Stack Used
 
-Example request:
+- **Python** (FastAPI backend, from earlier rounds)
+- **SQLite** — lightweight local database for lead storage
+- **n8n** (self-hosted via Docker) — automation/workflow engine
+- **Resend API** — transactional email delivery
+- **Webhooks** — event-driven communication between the Python backend and n8n
 
-```json
-{
-  "query": "What services does MoinSystems offer?"
-}
-```
+## Notes
 
-The request is processed through the retrieval and answer-generation layers before returning the response.
-
-### Retrieval
-
-```http
-POST /retrieve
-```
-
-Used to retrieve relevant knowledge from the RAG knowledge base.
-
-## RAG Flow
-
-The backend follows this general flow:
-
-```text
-User Question
-      ↓
-FastAPI /chat
-      ↓
-Request Validation
-      ↓
-RAG Service
-      ↓
-Retrieve Relevant Knowledge
-      ↓
-Build Context
-      ↓
-LLM
-      ↓
-Generated Answer
-      ↓
-FastAPI Response
-```
-
-## Knowledge Base
-
-The RAG system uses a knowledge-base dataset containing information about MoinSystems services.
-
-The original internship dataset is **not included in this public repository** because it contains company-specific information.
-
-To run the project with the original knowledge base, the required dataset must be provided separately and placed in the expected project location.
-
-For public demonstration or testing, a sanitized/sample dataset can be substituted without using confidential company information.
-
-## Installation
-
-Clone the repository and install the required dependencies:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-## Running the API
-
-Start the FastAPI application using Uvicorn:
-
-```bash
-python -m uvicorn main:app --reload
-```
-
-The API will be available locally at:
-
-```text
-http://127.0.0.1:8000
-```
-
-## API Documentation
-
-FastAPI automatically provides interactive API documentation.
-
-Swagger UI:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-ReDoc:
-
-```text
-http://127.0.0.1:8000/redoc
-```
-
-These interfaces can be used to test the API endpoints without building a separate frontend.
-
-## Technologies Used
-
-* Python
-* FastAPI
-* Uvicorn
-* Pydantic
-* Retrieval-Augmented Generation (RAG)
-* Vector Search
-* Embeddings
-* Large Language Models (LLMs)
-* REST APIs
-* Swagger / OpenAPI
-
-## Key Engineering Concepts
-
-This project demonstrates practical understanding of:
-
-* REST API design
-* HTTP methods and routes
-* Request/response models
-* Pydantic validation
-* API endpoint design
-* Service-layer separation
-* RAG integration
-* Knowledge retrieval
-* Error handling
-* API documentation
-* Backend architecture
-
-## Important Note
-
-This repository contains the backend implementation developed for the MoinSystems internship project.
-
-Company-specific datasets, credentials, API keys, and other private information should not be committed to the public repository.
-
-Environment variables and secrets should be stored separately and should never be hard-coded into source code.
-
-## Future Improvements
-
-Potential next steps include:
-
-* Dockerizing the FastAPI application
-* Deploying the API to cloud infrastructure
-* Connecting the API to a production website
-* Authentication and API security
-* Logging and monitoring
-* Production RAG evaluation
-* Latency and performance optimization
-* Agent/tool integration
+- The database used is SQLite rather than PostgreSQL; this satisfies the "PostgreSQL/other database" recommendation in the roadmap. Migrating to PostgreSQL later would only require changing the connection logic, not the overall design.
+- The n8n instance runs locally via Docker (`localhost:5679`); for a production deployment, this would need to point to a publicly accessible n8n instance or a hosted n8n Cloud URL.

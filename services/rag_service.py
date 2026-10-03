@@ -2,6 +2,8 @@
 
 import os
 import re
+import sqlite3
+import requests
 from dotenv import load_dotenv
 
 from openai import AsyncOpenAI
@@ -44,7 +46,6 @@ def normalize_name(name: str) -> str:
     parts = name.split()
     normalized_parts = [p.capitalize() for p in parts]
     return " ".join(normalized_parts)
-
 # ========================================
 # 4. LEAD VALIDATION
 # ========================================
@@ -53,6 +54,27 @@ def extract_email(text):
     pattern = r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
     match = re.search(pattern, text)
     return match.group(0) if match else None
+
+
+def extract_name(text: str) -> str:
+    text = text.strip()
+    patterns = [
+        r"^my name is\s+",
+        r"^i am\s+",
+        r"^i'm\s+",
+        r"^this is\s+",
+        r"^name is\s+"
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def extract_phone(text: str) -> str:
+    pattern = r"\d[\d\s-]{6,}\d"
+    match = re.search(pattern, text)
+    return match.group(0).strip() if match else None
+
 
 def validate_lead(lead: dict) -> list[str]:
     errors = []
@@ -72,7 +94,6 @@ def validate_lead(lead: dict) -> list[str]:
         errors.append("Phone number is required.")
 
     return errors
-
 # ========================================
 # 5. MOCK EMAIL SENDING (SAFE FOR GITHUB)
 # ========================================
@@ -82,9 +103,45 @@ def send_lead_email(lead: dict):
     if errors:
         return False, errors
 
-    print("MOCK EMAIL SENT TO:", lead["email"])
-    return True, "Mock email sent successfully"
+    # STEP 1: Database mein save karo
+    try:
+        connection = sqlite3.connect("lead.db")
+        cursor = connection.cursor()
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS lead(
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                email TEXT,
+                phone TEXT
+            )
+        """)
+
+        cursor.execute(
+            "INSERT INTO lead (name, email, phone) VALUES (?, ?, ?)",
+            (lead["name"], lead["email"], lead["phone"])
+        )
+
+        connection.commit()
+
+    except Exception as e:
+        logger.error(f"Database error: {e}")
+        return False, "Failed to save lead to database"
+
+    # STEP 2: n8n ko webhook bhejo
+    try:
+        n8n_url = os.getenv("N8N_WEBHOOK_URL")
+        response = requests.post(n8n_url, json=lead)
+
+        if response.status_code == 200:
+            return True, "Lead saved and notification sent successfully"
+        else:
+            return False, f"Lead saved, but webhook failed with status {response.status_code}"
+
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return False, "Lead saved, but failed to notify n8n"
+    
 # ========================================
 # 6. LEAD STATE
 # ========================================
@@ -194,17 +251,20 @@ def build_lead_success_message(lead: dict) -> str:
         "A member of our team will contact you shortly to assist you further."
     )
 
+
 # ========================================
 # 11. HANDLE LEAD CAPTURE (SYNC)
 # ========================================
 
 def handle_lead_capture(message: str) -> str:
     if not lead_state["name"]:
-        lead_state["name"] = normalize_name(message.strip())
+        extracted_name = extract_name(message.strip())
+        lead_state["name"] = normalize_name(extracted_name)
         return "Thanks! What is your email address?"
 
     if not lead_state["email"]:
-        lead_state["email"] = message.strip()
+        extracted_email = extract_email(message.strip())
+        lead_state["email"] = extracted_email if extracted_email else message.strip()
 
         errors = validate_lead({
             "name": lead_state["name"],
@@ -224,7 +284,8 @@ def handle_lead_capture(message: str) -> str:
         return "Thanks! Finally, what is your contact number."
 
     if not lead_state["phone"]:
-        lead_state["phone"] = message.strip()
+        extracted_phone = extract_phone(message.strip())
+        lead_state["phone"] = extracted_phone if extracted_phone else message.strip()
 
         lead = {
             "name": normalize_name(lead_state["name"]),
@@ -254,7 +315,6 @@ def handle_lead_capture(message: str) -> str:
         )
 
     return "Thank you. Our team will review your details."
-
 # ========================================
 # 12. MAIN CHATBOT PIPELINE (ASYNC)
 # ========================================
